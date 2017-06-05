@@ -14,7 +14,7 @@ The goals / steps of this project are the following:
 [//]: # (Image References)
 [image1]: ./examples/car_not_car.png
 [image2]: ./examples/HOG_example.jpg
-[image3]: ./examples/sliding_windows.jpg
+[image3]: ./output_images/test1.jpg_output.png
 [image4]: ./examples/sliding_window.jpg
 [image5]: ./examples/bboxes_and_heat.png
 [image6]: ./examples/labels_map.png
@@ -41,24 +41,28 @@ I started by reading in all the `vehicle` and `non-vehicle` images in the functi
 
 I used the function skimage.feature.hog to extract HOG features from the images read.
 
-Here is an example using the `YCrCb` color space and HOG parameters of `orientations=8`, `pixels_per_cell=(8, 8)` and `cells_per_block=(2, 2)`:
-
 ![alt text][image2]
 
 ####2. Explain how you settled on your final choice of HOG parameters.
 
 I tried various combinations of parameters and found that models trained in the RGB colorspace are affected by shades and brightness of the image.
-So I converted the images to YUV instead and used the U channel.
+So I converted the images to YUV instead and used the U channel, where the brightness is already specified by the Y channel.
 
 ####3. Describe how (and identify where in your code) you trained a classifier using your selected HOG features (and color features if you used them).
 
-I trained a linear SVM using...
+I trained a SVM model using the vehicle and non-vehicle images in function train_model (lines 319~333 of images.py)
+The images are first shuffled and split into training set and test set using a ratio of 0.2.
+Then I fit the model using the training set.
+Lastly, I used the test set to verify the accuracy of the trained SVM model.
 
 ###Sliding Window Search
 
 ####1. Describe how (and identify where in your code) you implemented a sliding window search.  How did you decide what scales to search and how much to overlap windows?
 
-I decided to search random window positions at random scales all over the image and came up with this (ok just kidding I didn't actually ;):
+All of the windows to be searched is identified in the function slide_window in images.py. (lines 192~237)
+The list of windows in then fed into the function search_windows to extract features from the windows and do a prediction on the features. (lines 239~270 in images.py)
+I used 3 different sizes of windows, and each window has a different searching range in the input image.
+The 3 window sizes are indicated in different colors below.
 
 ![alt text][image3]
 
