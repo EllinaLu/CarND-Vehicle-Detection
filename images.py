@@ -12,6 +12,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.svm import SVC
 from pathlib import Path
 import pickle
+from scipy.ndimage.measurements import label
 
 #parameters
 window_size_1 = (80, 80)
@@ -27,7 +28,7 @@ color_space = 'YUV' # Can be RGB, HSV, LUV, HLS, YUV, YCrCb
 orient_bins = 9 # HOG orientations
 pix_per_cell = 8
 cell_per_block = 2
-hog_use_channel = 1 # Can be 0, 1, 2, or "ALL"
+hog_use_channel = "ALL" # Can be 0, 1, 2, or "ALL"
 
 spatial_feat = True # Spatial features on or off
 spatial_size = (16, 16) # Spatial binning dimensions
@@ -276,9 +277,132 @@ def draw_boxes(img, bboxes, color=(0, 0, 255), thick=6):
     # Iterate through the bounding boxes
     for bbox in bboxes:
         # Draw a rectangle given bbox coordinates
-        cv2.rectangle(imcopy, bbox[0], bbox[1], color, thick)
+        tmp = tuple(map(tuple, bbox))
+        #cv2.rectangle(imcopy, bbox[0], bbox[1], color, thick)
+        cv2.rectangle(imcopy, tmp[0], tmp[1], color, thick)
     # Return the image copy with boxes drawn
     return imcopy
+
+def convert_color(img, conv='BGR2YUV'):
+    if conv == 'RGB2YCrCb':
+        return cv2.cvtColor(img, cv2.COLOR_RGB2YCrCb)
+    if conv == 'BGR2YCrCb':
+        return cv2.cvtColor(img, cv2.COLOR_BGR2YCrCb)
+    if conv == 'RGB2LUV':
+        return cv2.cvtColor(img, cv2.COLOR_RGB2LUV)
+    if conv == 'BGR2YUV':
+        return cv2.cvtColor(img, cv2.COLOR_BGR2YUV)
+
+# Define a single function that can extract features using hog sub-sampling and make predictions
+def find_cars(img, ystart, ystop, scale, svc, X_scaler, orient, pix_per_cell, cell_per_block, spatial_size, hist_bins, cells_per_step = 2, xy_window=(64, 64), spatial_feat=True):
+    #1) Create an empty list to receive positive detection windows
+    on_windows = []
+    
+    img_tosearch = img[ystart:ystop,:,:]
+    ctrans_tosearch = convert_color(img_tosearch, conv='BGR2YUV')
+    if scale != 1:
+        imshape = ctrans_tosearch.shape
+        ctrans_tosearch = cv2.resize(ctrans_tosearch, (np.int(imshape[1]/scale), np.int(imshape[0]/scale)))
+        
+    ch1 = ctrans_tosearch[:,:,0]
+    ch2 = ctrans_tosearch[:,:,1]
+    ch3 = ctrans_tosearch[:,:,2]
+    
+    # Define blocks and steps as above
+    nxblocks = (ch1.shape[1] // pix_per_cell) - cell_per_block + 1
+    nyblocks = (ch1.shape[0] // pix_per_cell) - cell_per_block + 1 
+    nfeat_per_block = orient*cell_per_block**2
+    
+    # 64 was the orginal sampling rate, with 8 cells and 8 pix per cell
+    nxblocks_per_window = (xy_window[0] // pix_per_cell) - cell_per_block + 1
+    nyblocks_per_window = (xy_window[1] // pix_per_cell) - cell_per_block + 1
+    #cells_per_step = 1.5  # Instead of overlap, define how many cells to step
+    nxsteps = np.int((nxblocks - nxblocks_per_window) // cells_per_step)
+    nysteps = np.int((nyblocks - nyblocks_per_window) // cells_per_step)
+    #print ("window=", window, "nblocks_per_window=", nblocks_per_window)
+    #print ("nxblocks=", nxblocks, " nyblocks=", nyblocks)
+    #print ("nxstep=", nxsteps, ", ", nysteps)    
+    # Compute individual channel HOG features for the entire image
+    hog1 = get_hog_features(ch1, orient, pix_per_cell, cell_per_block, feature_vec=False)
+    hog2 = get_hog_features(ch2, orient, pix_per_cell, cell_per_block, feature_vec=False)
+    hog3 = get_hog_features(ch3, orient, pix_per_cell, cell_per_block, feature_vec=False)
+    
+    for xb in range(nxsteps):
+        for yb in range(nysteps):
+            img_features = []
+            
+            ypos = np.int(yb*cells_per_step)
+            xpos = np.int(xb*cells_per_step)
+            # Extract HOG for this patch
+            hog_feat1 = hog1[ypos:ypos+nyblocks_per_window, xpos:xpos+nxblocks_per_window].ravel() 
+            hog_feat2 = hog2[ypos:ypos+nyblocks_per_window, xpos:xpos+nxblocks_per_window].ravel() 
+            hog_feat3 = hog3[ypos:ypos+nyblocks_per_window, xpos:xpos+nxblocks_per_window].ravel() 
+            hog_features = np.hstack((hog_feat1, hog_feat2, hog_feat3))
+
+            xleft = xpos*pix_per_cell
+            ytop = ypos*pix_per_cell
+
+            # Extract the image patch
+            subimg = cv2.resize(ctrans_tosearch[ytop:ytop+xy_window[1], xleft:xleft+xy_window[0]], (64,64))
+
+            # Get color features
+            if spatial_feat == True:
+                spatial_features = bin_spatial(subimg, size=spatial_size)
+            hist_features = color_hist(subimg, nbins=hist_bins)
+
+            # Scale features and make a prediction
+            img_features.append(spatial_features)
+            img_features.append(hist_features)
+            img_features.append(hog_features)
+            #print("spat=", spatial_features.shape)
+            #print ("l1=", np.concatenate(img_features).shape)
+            #print ("l2=", np.array(np.concatenate(img_features)).reshape(1, -1).shape)
+            test_features = X_scaler.transform(np.concatenate(img_features).reshape(1, -1))
+            #test_features = X_scaler.transform(np.array(np.concatenate(img_features)).reshape(1, -1))
+            #test_features = X_scaler.transform(np.hstack((spatial_features, hist_features, hog_features)).reshape(1, -1))    
+            
+            test_prediction = svc.predict(test_features)
+            
+            if test_prediction == 1:
+                xbox_left = np.int(xleft*scale)
+                ytop_draw = np.int(ytop*scale)
+                win_xdraw = np.int(xy_window[0]*scale)
+                win_ydraw = np.int(xy_window[1]*scale)
+                on_windows.append([(xbox_left, ytop_draw+ystart),(xbox_left+win_xdraw,ytop_draw+win_ydraw+ystart)])
+                #cv2.rectangle(draw_img,(xbox_left, ytop_draw+ystart),(xbox_left+win_draw,ytop_draw+win_draw+ystart),(0,0,255),6) 
+
+    return on_windows
+
+def add_heat(heatmap, bbox_list):
+    # Iterate through list of bboxes
+    for box in bbox_list:
+        # Add += 1 for all pixels inside each bbox
+        # Assuming each "box" takes the form ((x1, y1), (x2, y2))
+        heatmap[box[0][1]:box[1][1], box[0][0]:box[1][0]] += 1
+
+    # Return updated heatmap
+    return heatmap# Iterate through list of bboxes
+    
+def apply_threshold(heatmap, threshold):
+    # Zero out pixels below the threshold
+    heatmap[heatmap <= threshold] = 0
+    # Return thresholded map
+    return heatmap
+
+def draw_labeled_bboxes(img, labels):
+    # Iterate through all detected cars
+    for car_number in range(1, labels[1]+1):
+        # Find pixels with each car_number label value
+        nonzero = (labels[0] == car_number).nonzero()
+        # Identify x and y values of those pixels
+        nonzeroy = np.array(nonzero[0])
+        nonzerox = np.array(nonzero[1])
+        # Define a bounding box based on min/max x and y
+        bbox = ((np.min(nonzerox), np.min(nonzeroy)), (np.max(nonzerox), np.max(nonzeroy)))
+        # Draw the box on the image
+        cv2.rectangle(img, bbox[0], bbox[1], (0,0,255), 3)
+    # Return the image
+    return img
 
 #Train a new model using the vehicle and non-vehicle training data, and return the classifier    
 def train_model():    
@@ -366,53 +490,84 @@ def main():
     for p in test_paths:
         #image = mpimg.imread(p)
         image = cv2.imread(p)
-        #print (image)
         draw_image = np.copy(image)
-        
-        #################################
-        windows = slide_window(image, x_start_stop=[None, None], y_start_stop=y_start_stop_1, 
-                        xy_window=window_size_1, xy_overlap=(0.8, 0.8))
-    
-        hot_windows = search_windows(image, windows, clf, X_scaler, color_space=color_space, 
-                                spatial_size=spatial_size, hist_bins=hist_bins, 
-                                orient=orient_bins, pix_per_cell=pix_per_cell, 
-                                cell_per_block=cell_per_block, 
-                                hog_channel=hog_use_channel, spatial_feat=spatial_feat, 
-                                hist_feat=hist_feat, hog_feat=hog_feat)                       
-        
-        #print(os.path.basename(p), " = ", len(windows), ", ", len(hot_windows))
         draw_image = cv2.cvtColor(draw_image, cv2.COLOR_BGR2RGB)
-        window_img = draw_boxes(draw_image, hot_windows, color=(0, 0, 255), thick=3)
-        #window_img = draw_boxes(draw_image, windows, color=(0, 0, 255), thick=3)
+        scale = 1
+        hot_windows = []
+        heat = np.zeros_like(image[:,:,0]).astype(np.float)
+        
+        hot_windows = np.array(find_cars(image, y_start_stop_1[0], y_start_stop_1[1], scale, clf, X_scaler, orient_bins, pix_per_cell, cell_per_block, 
+        #hot_windows = find_cars(image, y_start_stop_1[0], y_start_stop_1[1], scale, clf, X_scaler, orient_bins, pix_per_cell, cell_per_block, 
+                    spatial_size, hist_bins, cells_per_step = 1, spatial_feat=spatial_feat))
+        #window_img = draw_boxes(draw_image, hot_windows, color=(0, 0, 255), thick=3)
+        print ("win1=", hot_windows.shape)
+        tmp = np.array(find_cars(image, y_start_stop_2[0], y_start_stop_2[1], 2, clf, X_scaler, orient_bins, pix_per_cell, cell_per_block, 
+                    spatial_size, hist_bins, cells_per_step = 1, spatial_feat=spatial_feat))
+        print ("tmp=", tmp.shape) 
+        if tmp.size > 0 and hot_windows.size > 0:
+            hot_windows = np.concatenate((hot_windows, tmp), axis=0)
+        elif tmp.size > 0 and hot_windows.size == 0:
+            hot_windows = tmp
+                    
+        print ("final=", hot_windows.shape) 
+        # Add heat to each box in box list
+        add_heat(heat, hot_windows)  
+        
+        # Apply threshold to help remove false positives
+        heat = apply_threshold(heat,1)
+        
+        # Visualize the heatmap when displaying    
+        heatmap = np.clip(heat, 0, 255)
 
-        #################################
-        windows = slide_window(image, x_start_stop=[None, None], y_start_stop=y_start_stop_2, 
-                        xy_window=window_size_2, xy_overlap=(0.7, 0.7))
-    
-        hot_windows = search_windows(image, windows, clf, X_scaler, color_space=color_space, 
-                                spatial_size=spatial_size, hist_bins=hist_bins, 
-                                orient=orient_bins, pix_per_cell=pix_per_cell, 
-                                cell_per_block=cell_per_block, 
-                                hog_channel=hog_use_channel, spatial_feat=spatial_feat, 
-                                hist_feat=hist_feat, hog_feat=hog_feat)                       
+        labels = label(heatmap)
+        window_img = draw_labeled_bboxes(draw_image, labels)
+        #window_img = draw_boxes(draw_image, hot_windows, color=(0, 255, 0), thick=3)
         
-        #print("        2. = ", len(windows), ", ", len(hot_windows))
-        window_img = draw_boxes(window_img, hot_windows, color=(0, 255, 0), thick=3)   
-        #window_img = draw_boxes(window_img, windows, color=(0, 255, 0), thick=6)   
         
-        #################################
-        windows = slide_window(image, x_start_stop=[None, None], y_start_stop=y_start_stop_3, 
-                        xy_window=window_size_3, xy_overlap=(0.7, 0.7))
-    
-        hot_windows = search_windows(image, windows, clf, X_scaler, color_space=color_space, 
-                                spatial_size=spatial_size, hist_bins=hist_bins, 
-                                orient=orient_bins, pix_per_cell=pix_per_cell, 
-                                cell_per_block=cell_per_block, 
-                                hog_channel=hog_use_channel, spatial_feat=spatial_feat, 
-                                hist_feat=hist_feat, hog_feat=hog_feat)                       
-        
-        #print("        3. = ", len(windows), ", ", len(hot_windows))
-        window_img = draw_boxes(window_img, hot_windows, color=(255, 0, 0), thick=3)
+      # #################################
+      # windows = slide_window(image, x_start_stop=[None, None], y_start_stop=y_start_stop_1, 
+      #                 xy_window=window_size_1, xy_overlap=(0.8, 0.8))
+      #
+      # hot_windows = search_windows(image, windows, clf, X_scaler, color_space=color_space, 
+      #                         spatial_size=spatial_size, hist_bins=hist_bins, 
+      #                         orient=orient_bins, pix_per_cell=pix_per_cell, 
+      #                         cell_per_block=cell_per_block, 
+      #                         hog_channel=hog_use_channel, spatial_feat=spatial_feat, 
+      #                         hist_feat=hist_feat, hog_feat=hog_feat)                       
+      # 
+      # #print(os.path.basename(p), " = ", len(windows), ", ", len(hot_windows))
+      # draw_image = cv2.cvtColor(draw_image, cv2.COLOR_BGR2RGB)
+      # window_img = draw_boxes(draw_image, hot_windows, color=(0, 0, 255), thick=3)
+      # #window_img = draw_boxes(draw_image, windows, color=(0, 0, 255), thick=3)
+      #
+      # #################################
+      # windows = slide_window(image, x_start_stop=[None, None], y_start_stop=y_start_stop_2, 
+      #                 xy_window=window_size_2, xy_overlap=(0.7, 0.7))
+      #
+      # hot_windows = search_windows(image, windows, clf, X_scaler, color_space=color_space, 
+      #                         spatial_size=spatial_size, hist_bins=hist_bins, 
+      #                         orient=orient_bins, pix_per_cell=pix_per_cell, 
+      #                         cell_per_block=cell_per_block, 
+      #                         hog_channel=hog_use_channel, spatial_feat=spatial_feat, 
+      #                         hist_feat=hist_feat, hog_feat=hog_feat)                       
+      # 
+      # #print("        2. = ", len(windows), ", ", len(hot_windows))
+      # window_img = draw_boxes(window_img, hot_windows, color=(0, 255, 0), thick=3)   
+      # #window_img = draw_boxes(window_img, windows, color=(0, 255, 0), thick=6)   
+      # 
+      # #################################
+      # windows = slide_window(image, x_start_stop=[None, None], y_start_stop=y_start_stop_3, 
+      #                 xy_window=window_size_3, xy_overlap=(0.7, 0.7))
+      #
+      # hot_windows = search_windows(image, windows, clf, X_scaler, color_space=color_space, 
+      #                         spatial_size=spatial_size, hist_bins=hist_bins, 
+      #                         orient=orient_bins, pix_per_cell=pix_per_cell, 
+      #                         cell_per_block=cell_per_block, 
+      #                         hog_channel=hog_use_channel, spatial_feat=spatial_feat, 
+      #                         hist_feat=hist_feat, hog_feat=hog_feat)                       
+      # 
+      # #print("        3. = ", len(windows), ", ", len(hot_windows))
+      # window_img = draw_boxes(window_img, hot_windows, color=(255, 0, 0), thick=3)
 
         
         # Plot the result
@@ -422,6 +577,15 @@ def main():
         #plt.xlim(0, 1280)
         #plt.ylim(720, 0)
         pylab.savefig('output_images/{0}_output.png'.format(os.path.basename(p)))
+        #plt.show()
+        plt.close(f)
+        
+        f, (ax1) = plt.subplots(1, 1)
+        f.tight_layout()
+        ax1.imshow(labels[0], cmap='gray')
+        #plt.xlim(0, 1280)
+        #plt.ylim(720, 0)
+        pylab.savefig('output_images/{0}_heat.png'.format(os.path.basename(p)))
         #plt.show()
         plt.close(f)
     
