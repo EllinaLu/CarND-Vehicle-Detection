@@ -60,8 +60,8 @@ else:
 
 #global variables
 frameCount = 0
-found_box_history = collections.deque(maxlen = 7)
-heat_threshold = 6
+found_box_history = collections.deque(maxlen = 8)
+heat_threshold = 7
 
 #parameters = {'kernel'=['linear', 'rbf'], 'C'=[1, 10]}
 
@@ -356,7 +356,7 @@ def find_cars(img, ystart, ystop, scale, svc, X_scaler, orient, pix_per_cell, ce
     else:
         hog = get_hog_features(ctrans_tosearch[:,:,hog_use_channel], orient, pix_per_cell, cell_per_block, feature_vec=False)
 
-    print ("Windows=", nxsteps*nysteps)
+    #print ("Windows=", nxsteps*nysteps)
     for xb in range(nxsteps):
         for yb in range(nysteps):
             img_features = []
@@ -437,6 +437,11 @@ def draw_labeled_bboxes(img, labels):
         nonzerox = np.array(nonzero[1])
         # Define a bounding box based on min/max x and y
         bbox = ((np.min(nonzerox), np.min(nonzeroy)), (np.max(nonzerox), np.max(nonzeroy)))
+        tmpY = np.max(nonzeroy) - np.min(nonzeroy)
+        tmpX = np.max(nonzerox) - np.min(nonzerox)
+        if tmpY > (tmpX*2.0):   #if the box is too thin, skip
+            continue
+        
         # Draw the box on the image
         cv2.rectangle(img, bbox[0], bbox[1], (0,0,255), 3)
     # Return the image
@@ -484,10 +489,12 @@ def processImage(image):
 
     #Infer bounding box of cars for current frame
     add_heat(heat, hot_windows)
-    if 0: #hot_windows.size > 20:
-        heat = apply_threshold(heat, 2)
-    else:
-        heat = apply_threshold(heat, 1)
+    m = np.amax(heat)
+    #if hot_windows.size > 30:
+    #    heat = apply_threshold(heat, 2)
+    #else:
+    #    heat = apply_threshold(heat, 1)
+    heat = apply_threshold(heat, m/3)
     heatmap = np.clip(heat, 0, 255)
     labels = label(heatmap)
     current_list = []
